@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>FileBridge</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 16px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            max-width: 420px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        h2 {
+            margin-top: 0;
+            text-align: center;
+        }
+
+        button {
+            margin: 5px 5px 10px 0;
+            padding: 10px 20px;
+            border: none;
+            background: #007bff;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        textarea {
+            width: 100%;
+            height: 230px;
+            resize: none;
+            font-family: monospace;
+            box-sizing: border-box;
+        }
+
+        .qr-wrapper {
+            display: flex;
+            justify-content: center;
+            margin: 20px 0;
+        }
+
+        .qr svg {
+            width: 350px;
+            height: 350px;
+        }
+
+        .file-list div {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .file-list button {
+            background: #dc3545;
+            padding: 2px 8px;
+            font-size: 14px;
+        }
+
+        .progress {
+            margin-top: 10px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .status {
+            font-size: 12px;
+            color: #555;
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        small {
+            font-size: 0.8em;
+            color: #555;
+            display: block;
+            margin-top: 16px;
+            margin-bottom: 32px;
+            text-align: center;
+        }
+
+        @media (max-width: 480px) {
+            .qr-wrapper {
+                margin: 40px 0;
+            }
+        }
+
+        .floating-logo2 {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            text-decoration: none;
+            z-index: 999;
+        }
+
+        .logo-container {
+            background-color: #ffeb3b;
+            padding: 10px 12px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease;
+        }
+
+        .logo-container:hover {
+            transform: scale(1.05);
+        }
+
+        .logo-text {
+            font-size: 14px;
+            color: #333;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h2>FileBridge</h2>
+        <button onclick="switchMode('sender')">送信</button>
+        <button onclick="switchMode('receiver')">受信</button>
+
+        <div id="senderUI" style="display:none">
+            <input type="file" id="fileInput" multiple>
+            <div id="fileList" class="file-list"></div>
+            <button onclick="createOffer()">接続コード作成</button>
+
+            <label>接続コード（送信）</label>
+            <textarea id="offer" readonly></textarea>
+            <small>このコードを相手に送ってください。ページを更新すると無効になります。</small>
+
+            <div class="qr-wrapper">
+                <div id="qrOffer" class="qr"></div>
+            </div>
+
+            <label>返答コードを入力</label>
+            <textarea id="answer"></textarea>
+            <button onclick="receiveAnswer()">接続完了</button>
+        </div>
+
+        <div id="receiverUI" style="display:none">
+            <label>接続コード（受信）</label>
+            <textarea id="remoteOffer"></textarea>
+            <button onclick="receiveOffer()">接続</button>
+
+            <label>返答コード（送信者に渡す）</label>
+            <textarea id="localAnswer" readonly></textarea>
+
+            <div class="qr-wrapper">
+                <div id="qrAnswerReceiver" class="qr"></div>
+            </div>
+        </div>
+
+        <div id="progress" class="progress"></div>
+        <div id="status" class="status"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <script>
+        let pc, dc;
+        let filesToSend = [];
+
+        function switchMode(mode) {
+            document.getElementById("senderUI").style.display = mode === 'sender' ? "block" : "none";
+            document.getElementById("receiverUI").style.display = mode === 'receiver' ? "block" : "none";
+            clearTextFields();
+            initConnection();
+        }
+
+        function clearTextFields() {
+            ["offer", "answer", "remoteOffer", "localAnswer"].forEach(id => document.getElementById(id).value = "");
+            ["qrOffer", "qrAnswerReceiver"].forEach(id => document.getElementById(id).innerHTML = "");
+            document.getElementById("progress").innerText = "";
+            document.getElementById("status").innerText = "";
+            filesToSend = [];
+            updateFileList();
+        }
+
+        function initConnection() {
+            pc = new RTCPeerConnection();
+            pc.onicecandidate = e => {
+                if (e.candidate) return;
+                const sdp = JSON.stringify(pc.localDescription);
+                if (pc.localDescription.type === 'offer') {
+                    document.getElementById("offer").value = sdp;
+                    generateQRCodeSVG(sdp, "qrOffer");
+                } else {
+                    document.getElementById("localAnswer").value = sdp;
+                    generateQRCodeSVG(sdp, "qrAnswerReceiver");
+                }
+            };
+        }
+
+        document.getElementById("fileInput").addEventListener("change", e => {
+            const files = Array.from(e.target.files);
+            files.forEach(file => {
+                if (!filesToSend.some(f => f.name === file.name)) {
+                    filesToSend.push(file);
+                }
+            });
+            updateFileList();
+        });
+
+        function updateFileList() {
+            const listEl = document.getElementById("fileList");
+            listEl.innerHTML = "";
+            filesToSend.forEach((file, index) => {
+                const div = document.createElement("div");
+                div.textContent = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+                const btn = document.createElement("button");
+                btn.textContent = "×";
+                btn.onclick = () => {
+                    filesToSend.splice(index, 1);
+                    updateFileList();
+                };
+                div.appendChild(btn);
+                listEl.appendChild(div);
+            });
+        }
+
+        function createOffer() {
+            dc = pc.createDataChannel("file");
+            dc.binaryType = 'arraybuffer';
+            dc.onopen = () => sendFiles();
+            pc.createOffer().then(offer => pc.setLocalDescription(offer));
+        }
+
+        function receiveAnswer() {
+            const answer = JSON.parse(document.getElementById("answer").value);
+            pc.setRemoteDescription(new RTCSessionDescription(answer));
+        }
+
+        function receiveOffer() {
+            const offer = JSON.parse(document.getElementById("remoteOffer").value);
+            pc.ondatachannel = e => {
+                dc = e.channel;
+                dc.binaryType = 'arraybuffer';
+                receiveFiles();
+            };
+            pc.setRemoteDescription(new RTCSessionDescription(offer))
+                .then(() => pc.createAnswer())
+                .then(answer => pc.setLocalDescription(answer));
+        }
+
+        function sendFiles() {
+            if (!dc || dc.readyState !== "open") return;
+            let totalSize = filesToSend.reduce((sum, f) => sum + f.size, 0);
+            let sentSize = 0;
+
+            for (let file of filesToSend) {
+                dc.send(JSON.stringify({ name: file.name, size: file.size }));
+                const chunkSize = 16384;
+                let offset = 0;
+
+                function sendChunk() {
+                    if (offset < file.size) {
+                        const slice = file.slice(offset, offset + chunkSize);
+                        slice.arrayBuffer().then(buf => {
+                            dc.send(buf);
+                            offset += buf.byteLength;
+                            sentSize += buf.byteLength;
+                            updateProgress(sentSize, totalSize, file.name);
+                            sendChunk();
+                        });
+                    } else {
+                        document.getElementById("status").innerText = `${file.name} 送信完了 ✔`;
+                    }
+                }
+                sendChunk();
+            }
+        }
+
+        function receiveFiles() {
+            let metadata = null, receivedBuffers = [], receivedSize = 0;
+
+            dc.onmessage = e => {
+                if (typeof e.data === "string") {
+                    metadata = JSON.parse(e.data);
+                    receivedBuffers = [];
+                    receivedSize = 0;
+                    document.getElementById("status").innerText = `${metadata.name} 受信中...`;
+                } else {
+                    receivedBuffers.push(e.data);
+                    receivedSize += e.data.byteLength;
+                    updateProgress(receivedSize, metadata.size, metadata.name);
+                    if (receivedSize >= metadata.size) {
+                        const blob = new Blob(receivedBuffers);
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        a.download = metadata.name;
+                        a.click();
+                        document.getElementById("status").innerText = `${metadata.name} 受信完了 ✔`;
+                    }
+                }
+            };
+        }
+
+        function updateProgress(current, total, filename = "") {
+            const percent = total > 0 ? (current / total * 100).toFixed(1) : 0;
+            document.getElementById("progress").innerText = filename ? `進行中: ${filename} - ${percent}%` : '';
+        }
+
+        function generateQRCodeSVG(text, targetId) {
+            const qr = qrcode(0, 'L');
+            qr.addData(text);
+            qr.make();
+            const svgTag = qr.createSvgTag({ scalable: true, margin: 2 });
+            const target = document.getElementById(targetId);
+            target.innerHTML = svgTag;
+            const svg = target.querySelector("svg");
+            if (svg) {
+                svg.setAttribute("width", "350");
+                svg.setAttribute("height", "350");
+            }
+        }
+    </script>
+
+    <a href="scan.html" class="floating-logo2" target="_blank" rel="noopener noreferrer">
+        <div class="logo-container">
+            <span class="logo-text">QRコードスキャン</span>
+        </div>
+    </a>
+</body>
+
+</html>
